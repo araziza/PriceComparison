@@ -469,55 +469,105 @@ class LowesScraper(BaseScraper):
 
 
 class RonaScraper(BaseScraper):
-    """Scraper for Rona (rona.ca)"""
+    """Scraper for Rona (rona.ca) - Uses Selenium for JavaScript content"""
 
     def __init__(self):
         super().__init__("Rona", "https://www.rona.ca")
 
     def search_product(self, part_number: str, part_description: str) -> Tuple[Optional[float], Optional[str], float, str]:
-        """Search Rona for a product"""
+        """Search Rona for a product using Selenium"""
+        driver = None
         try:
             search_term = f"{part_number} {part_description}".strip()
             search_url = f"{self.base_url}/en/search?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
-            response = self.session.get(search_url, timeout=SCRAPE_TIMEOUT)
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.content, 'html.parser')
+            driver = self._get_selenium_driver()
+            driver.get(search_url)
 
-            # Rona product tiles
-            product = soup.find('div', class_='product-tile') or soup.find('div', class_='product-card')
+            # Wait for page to load
+            time.sleep(3)
+
+            wait = WebDriverWait(driver, 15)
+            try:
+                wait.until(EC.presence_of_element_located((
+                    By.CSS_SELECTOR,
+                    "div.product-tile, div.product-card, div[class*='product'], article"
+                )))
+            except TimeoutException:
+                self.save_debug_html(driver.page_source, part_number, "timeout_waiting_for_products")
+                pass
+
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+            if self.debug_mode:
+                self.save_debug_html(driver.page_source, part_number, "full_page")
+
+            # Rona product tiles - try multiple selectors
+            product = (
+                soup.find('div', class_='product-tile') or
+                soup.find('div', class_='product-card') or
+                soup.find('article', class_=re.compile(r'product', re.I)) or
+                soup.find('div', class_=re.compile(r'product-item', re.I)) or
+                soup.find('div', {'data-product': True})
+            )
 
             if not product:
+                self.save_debug_html(driver.page_source, part_number, "no_products_found")
                 return None, None, 0.0, "No products found"
 
-            # Extract title
-            title_elem = product.find('div', class_='product-name') or product.find('h3')
+            # Extract title - Rona specific selectors
+            title_elem = (
+                product.find('div', class_='product-name') or
+                product.find('h3') or
+                product.find('h2', class_='product-title') or
+                product.find('a', class_=re.compile(r'product.*title', re.I)) or
+                product.find('span', class_=re.compile(r'product.*name', re.I))
+            )
             title = title_elem.text.strip() if title_elem else ""
 
-            # Extract price
-            price_elem = product.find('span', class_='price-value') or product.find('div', class_='price')
-            if not price_elem:
-                return None, None, 0.0, "Price not found"
+            # Extract price - Rona specific
+            price_elem = (
+                product.find('span', class_='price-value') or
+                product.find('div', class_='price') or
+                product.find('span', class_='price') or
+                product.find('span', class_=re.compile(r'price', re.I)) or
+                product.find('div', class_=re.compile(r'price', re.I))
+            )
 
-            price = self.extract_price(price_elem.text)
+            if not price_elem:
+                price_text = product.find(string=re.compile(r'\$\s*\d+'))
+                if price_text:
+                    price = self.extract_price(price_text)
+                else:
+                    self.save_debug_html(driver.page_source, part_number, "price_not_found")
+                    return None, None, 0.0, "Price not found"
+            else:
+                price = self.extract_price(price_elem.text)
+
+            if not price:
+                self.save_debug_html(driver.page_source, part_number, "price_parse_failed")
+                return None, None, 0.0, "Could not parse price"
 
             # Extract URL
             link_elem = product.find('a', href=True)
-            url = link_elem['href'] if link_elem else None
+            url = link_elem.get('href') if link_elem else None
             if url and not url.startswith('http'):
                 url = self.base_url + url
 
             # Calculate confidence
-            confidence = self.calculate_match_confidence(search_term, title)
+            confidence = self.calculate_match_confidence(search_term, title) if title else 0.5
 
             return price, url, confidence, "Success"
 
-        except requests.RequestException as e:
-            return None, None, 0.0, f"Request error: {str(e)}"
+        except TimeoutException:
+            return None, None, 0.0, "Page load timeout"
         except Exception as e:
             return None, None, 0.0, f"Error: {str(e)}"
+        finally:
+            if driver:
+                driver.quit()
 
 
 class ScraperManager:
