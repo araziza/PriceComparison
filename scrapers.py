@@ -21,11 +21,29 @@ from config import SCRAPE_TIMEOUT, SCRAPE_DELAY, MAX_RETRIES, USER_AGENT, CONFID
 class BaseScraper(ABC):
     """Base class for all competitor scrapers"""
 
-    def __init__(self, competitor_name: str, base_url: str):
+    def __init__(self, competitor_name: str, base_url: str, debug_mode: bool = False):
         self.competitor_name = competitor_name
         self.base_url = base_url
+        self.debug_mode = debug_mode
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': USER_AGENT})
+
+    def save_debug_html(self, html_content: str, part_number: str, reason: str = "debug"):
+        """Save HTML content for debugging purposes"""
+        if self.debug_mode:
+            import os
+            debug_dir = "debug_html"
+            os.makedirs(debug_dir, exist_ok=True)
+
+            # Sanitize filename
+            safe_part = re.sub(r'[^\w\-]', '_', part_number)
+            safe_reason = re.sub(r'[^\w\-]', '_', reason)
+            filename = f"{debug_dir}/{self.competitor_name}_{safe_part}_{safe_reason}.html"
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+
+            print(f"Debug HTML saved to: {filename}")
 
     @abstractmethod
     def search_product(self, part_number: str, part_description: str) -> Tuple[Optional[float], Optional[str], float, str]:
@@ -99,14 +117,23 @@ class BaseScraper(ABC):
 
     def _get_selenium_driver(self) -> webdriver.Chrome:
         """Create and configure a Selenium Chrome driver"""
+        from webdriver_manager.chrome import ChromeDriverManager
+        from selenium.webdriver.chrome.service import Service
+
         chrome_options = Options()
-        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--headless=new')  # Use new headless mode
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument(f'user-agent={USER_AGENT}')
+        chrome_options.add_argument('--window-size=1920,1080')
 
-        driver = webdriver.Chrome(options=chrome_options)
+        # Use webdriver-manager to automatically handle ChromeDriver
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.set_page_load_timeout(SCRAPE_TIMEOUT)
+
         return driver
 
 
@@ -163,157 +190,266 @@ class PrincessAutoScraper(BaseScraper):
 
 
 class CanadianTireScraper(BaseScraper):
-    """Scraper for Canadian Tire (canadiantire.ca)"""
+    """Scraper for Canadian Tire (canadiantire.ca) - Uses Selenium for JavaScript content"""
 
     def __init__(self):
         super().__init__("Canadian Tire", "https://www.canadiantire.ca")
 
     def search_product(self, part_number: str, part_description: str) -> Tuple[Optional[float], Optional[str], float, str]:
-        """Search Canadian Tire for a product"""
+        """Search Canadian Tire for a product using Selenium"""
+        driver = None
         try:
             search_term = f"{part_number} {part_description}".strip()
             search_url = f"{self.base_url}/en/search-results.html?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
-            response = self.session.get(search_url, timeout=SCRAPE_TIMEOUT)
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.content, 'html.parser')
+            driver = self._get_selenium_driver()
+            driver.get(search_url)
+
+            # Wait for products to load
+            wait = WebDriverWait(driver, 10)
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.product-tile, div[data-track-product], div.product-card")))
+            except TimeoutException:
+                return None, None, 0.0, "Search results did not load"
+
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
 
             # Canadian Tire product tiles
-            product = soup.find('div', class_='product-tile') or soup.find('div', {'data-track-product': True})
+            product = (
+                soup.find('div', class_='product-tile') or
+                soup.find('div', {'data-track-product': True}) or
+                soup.find('div', class_='product-card')
+            )
 
             if not product:
                 return None, None, 0.0, "No products found"
 
             # Extract title
-            title_elem = product.find('div', class_='product-name') or product.find('span', class_='product__name')
+            title_elem = (
+                product.find('div', class_='product-name') or
+                product.find('span', class_='product__name') or
+                product.find('h3', class_='product-name')
+            )
             title = title_elem.text.strip() if title_elem else ""
 
             # Extract price
-            price_elem = product.find('span', class_='price__value') or product.find('span', class_='price')
+            price_elem = (
+                product.find('span', class_='price__value') or
+                product.find('span', class_='price') or
+                product.find('div', class_='price')
+            )
             if not price_elem:
-                return None, None, 0.0, "Price not found"
-
-            price = self.extract_price(price_elem.text)
+                price_text = product.find(string=re.compile(r'\$\s*\d+'))
+                if price_text:
+                    price = self.extract_price(price_text)
+                else:
+                    return None, None, 0.0, "Price not found"
+            else:
+                price = self.extract_price(price_elem.text)
 
             # Extract URL
             link_elem = product.find('a', class_='product-link') or product.find('a', href=True)
-            url = self.base_url + link_elem['href'] if link_elem and not link_elem['href'].startswith('http') else link_elem['href'] if link_elem else None
+            url = link_elem.get('href') if link_elem else None
+            if url and not url.startswith('http'):
+                url = self.base_url + url
 
             # Calculate confidence
-            confidence = self.calculate_match_confidence(search_term, title)
+            confidence = self.calculate_match_confidence(search_term, title) if title else 0.5
 
             return price, url, confidence, "Success"
 
-        except requests.RequestException as e:
-            return None, None, 0.0, f"Request error: {str(e)}"
+        except TimeoutException:
+            return None, None, 0.0, "Page load timeout"
         except Exception as e:
             return None, None, 0.0, f"Error: {str(e)}"
+        finally:
+            if driver:
+                driver.quit()
 
 
 class HomeDepotScraper(BaseScraper):
-    """Scraper for Home Depot Canada (homedepot.ca)"""
+    """Scraper for Home Depot Canada (homedepot.ca) - Uses Selenium for JavaScript content"""
 
     def __init__(self):
         super().__init__("Home Depot", "https://www.homedepot.ca")
 
     def search_product(self, part_number: str, part_description: str) -> Tuple[Optional[float], Optional[str], float, str]:
-        """Search Home Depot Canada for a product"""
+        """Search Home Depot Canada for a product using Selenium"""
+        driver = None
         try:
+            # Home Depot loads content via JavaScript, so we need Selenium
             search_term = f"{part_number} {part_description}".strip()
             search_url = f"{self.base_url}/search?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
-            response = self.session.get(search_url, timeout=SCRAPE_TIMEOUT)
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.content, 'html.parser')
+            # Use Selenium to load JavaScript content
+            driver = self._get_selenium_driver()
+            driver.get(search_url)
 
-            # Home Depot product tiles
-            product = soup.find('div', class_='product-pod') or soup.find('div', {'data-testid': 'product-pod'})
+            # Wait for product listings to load
+            wait = WebDriverWait(driver, 10)
+
+            # Try to find product pods (Home Depot uses these for search results)
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.product-pod, div[data-testid='product-pod'], div.product-card")))
+            except TimeoutException:
+                return None, None, 0.0, "Search results did not load"
+
+            # Parse the page with BeautifulSoup
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+
+            # Find first product - try multiple selectors
+            product = (
+                soup.find('div', class_='product-pod') or
+                soup.find('div', {'data-testid': 'product-pod'}) or
+                soup.find('div', class_='product-card') or
+                soup.find('div', class_='plp-pod')
+            )
 
             if not product:
-                return None, None, 0.0, "No products found"
+                # Save debug HTML to help troubleshoot
+                self.save_debug_html(driver.page_source, part_number, "no_products_found")
+                return None, None, 0.0, "No products found in search results"
 
-            # Extract title
-            title_elem = product.find('span', class_='product-identifier') or product.find('h2')
+            # Extract title - try multiple selectors
+            title_elem = (
+                product.find('span', class_='product-header__title') or
+                product.find('span', class_='product-identifier') or
+                product.find('h2', class_='sui-text-primary') or
+                product.find('h3') or
+                product.find('a', class_='sui-font-bold')
+            )
             title = title_elem.text.strip() if title_elem else ""
 
-            # Extract price
-            price_elem = product.find('div', class_='price') or product.find('span', {'data-testid': 'price'})
-            if not price_elem:
-                return None, None, 0.0, "Price not found"
+            # Extract price - Home Depot uses various price selectors
+            price_elem = (
+                product.find('span', {'data-testid': 'price'}) or
+                product.find('div', class_='sui-text-primary') or
+                product.find('span', class_='price') or
+                product.find('div', class_='price__value') or
+                product.find('span', string=re.compile(r'\$\d+'))
+            )
 
-            price = self.extract_price(price_elem.text)
+            if not price_elem:
+                # Try to find any element with a dollar sign as last resort
+                price_text = product.find(string=re.compile(r'\$\s*\d+'))
+                if price_text:
+                    price = self.extract_price(price_text)
+                else:
+                    # Save debug HTML to help troubleshoot
+                    self.save_debug_html(driver.page_source, part_number, "price_not_found")
+                    return None, None, 0.0, "Price element not found on page"
+            else:
+                price = self.extract_price(price_elem.text)
+
+            if not price:
+                return None, None, 0.0, "Could not parse price from element"
 
             # Extract URL
-            link_elem = product.find('a', class_='product-link') or product.find('a', href=True)
-            url = link_elem['href'] if link_elem else None
+            link_elem = (
+                product.find('a', class_='product-pod__link') or
+                product.find('a', class_='sui-font-bold') or
+                product.find('a', href=re.compile(r'/product/'))
+            )
+            url = link_elem.get('href') if link_elem else None
             if url and not url.startswith('http'):
                 url = self.base_url + url
 
             # Calculate confidence
-            confidence = self.calculate_match_confidence(search_term, title)
+            confidence = self.calculate_match_confidence(search_term, title) if title else 0.5
 
             return price, url, confidence, "Success"
 
-        except requests.RequestException as e:
-            return None, None, 0.0, f"Request error: {str(e)}"
+        except TimeoutException:
+            return None, None, 0.0, "Page load timeout"
         except Exception as e:
             return None, None, 0.0, f"Error: {str(e)}"
+        finally:
+            if driver:
+                driver.quit()
 
 
 class LowesScraper(BaseScraper):
-    """Scraper for Lowes Canada (lowes.ca)"""
+    """Scraper for Lowes Canada (lowes.ca) - Uses Selenium for JavaScript content"""
 
     def __init__(self):
         super().__init__("Lowes", "https://www.lowes.ca")
 
     def search_product(self, part_number: str, part_description: str) -> Tuple[Optional[float], Optional[str], float, str]:
-        """Search Lowes Canada for a product"""
+        """Search Lowes Canada for a product using Selenium"""
+        driver = None
         try:
             search_term = f"{part_number} {part_description}".strip()
             search_url = f"{self.base_url}/search?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
-            response = self.session.get(search_url, timeout=SCRAPE_TIMEOUT)
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.content, 'html.parser')
+            driver = self._get_selenium_driver()
+            driver.get(search_url)
+
+            # Wait for products to load
+            wait = WebDriverWait(driver, 10)
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.product-tile, article.product-card, div.product-pod")))
+            except TimeoutException:
+                return None, None, 0.0, "Search results did not load"
+
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
 
             # Lowes product tiles
-            product = soup.find('div', class_='product-tile') or soup.find('article', class_='product-card')
+            product = (
+                soup.find('div', class_='product-tile') or
+                soup.find('article', class_='product-card') or
+                soup.find('div', class_='product-pod')
+            )
 
             if not product:
                 return None, None, 0.0, "No products found"
 
             # Extract title
-            title_elem = product.find('h2', class_='product-title') or product.find('div', class_='product-name')
+            title_elem = (
+                product.find('h2', class_='product-title') or
+                product.find('div', class_='product-name') or
+                product.find('a', class_='product-title')
+            )
             title = title_elem.text.strip() if title_elem else ""
 
             # Extract price
-            price_elem = product.find('span', class_='price-value') or product.find('div', class_='price')
+            price_elem = (
+                product.find('span', class_='price-value') or
+                product.find('div', class_='price') or
+                product.find('span', class_='price')
+            )
             if not price_elem:
-                return None, None, 0.0, "Price not found"
-
-            price = self.extract_price(price_elem.text)
+                price_text = product.find(string=re.compile(r'\$\s*\d+'))
+                if price_text:
+                    price = self.extract_price(price_text)
+                else:
+                    return None, None, 0.0, "Price not found"
+            else:
+                price = self.extract_price(price_elem.text)
 
             # Extract URL
             link_elem = product.find('a', href=True)
-            url = link_elem['href'] if link_elem else None
+            url = link_elem.get('href') if link_elem else None
             if url and not url.startswith('http'):
                 url = self.base_url + url
 
             # Calculate confidence
-            confidence = self.calculate_match_confidence(search_term, title)
+            confidence = self.calculate_match_confidence(search_term, title) if title else 0.5
 
             return price, url, confidence, "Success"
 
-        except requests.RequestException as e:
-            return None, None, 0.0, f"Request error: {str(e)}"
+        except TimeoutException:
+            return None, None, 0.0, "Page load timeout"
         except Exception as e:
             return None, None, 0.0, f"Error: {str(e)}"
+        finally:
+            if driver:
+                driver.quit()
 
 
 class RonaScraper(BaseScraper):
