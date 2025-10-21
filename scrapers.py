@@ -504,20 +504,52 @@ class RonaScraper(BaseScraper):
             if self.debug_mode:
                 self.save_debug_html(driver.page_source, part_number, "full_page")
 
-            # Rona product tiles - try multiple selectors
-            product = (
-                soup.find('div', class_='product-tile') or
-                soup.find('div', class_='product-card') or
-                soup.find('article', class_=re.compile(r'product', re.I)) or
-                soup.find('div', class_=re.compile(r'product-item', re.I)) or
-                soup.find('div', {'data-product': True})
+            # Find ALL products - not just the first one
+            products = (
+                soup.find_all('div', class_='product-tile') or
+                soup.find_all('div', class_='product-card') or
+                soup.find_all('article', class_=re.compile(r'product', re.I)) or
+                soup.find_all('div', class_=re.compile(r'product-item', re.I)) or
+                soup.find_all('div', {'data-product': True})
             )
 
-            if not product:
+            if not products:
                 self.save_debug_html(driver.page_source, part_number, "no_products_found")
                 return None, None, 0.0, "No products found"
 
-            # Extract title - Rona specific selectors
+            # Search through ALL products to find the one matching our part number
+            best_match = None
+            best_confidence = 0.0
+
+            for product in products[:10]:  # Check first 10 products
+                # Extract title
+                title_elem = (
+                    product.find('div', class_='product-name') or
+                    product.find('h3') or
+                    product.find('h2', class_='product-title') or
+                    product.find('a', class_=re.compile(r'product.*title', re.I)) or
+                    product.find('span', class_=re.compile(r'product.*name', re.I))
+                )
+                title = title_elem.text.strip() if title_elem else ""
+
+                # Check if this product contains our exact part number
+                if part_number.upper() in title.upper() or part_number.upper() in str(product).upper():
+                    # Calculate confidence for this match
+                    confidence = self.calculate_match_confidence(search_term, title)
+
+                    # Keep track of best match
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_match = product
+
+            # If no exact match found, fall back to first product
+            if not best_match:
+                best_match = products[0]
+                best_confidence = 0.3  # Low confidence for non-exact match
+
+            product = best_match
+
+            # Extract title from best match
             title_elem = (
                 product.find('div', class_='product-name') or
                 product.find('h3') or
@@ -556,10 +588,7 @@ class RonaScraper(BaseScraper):
             if url and not url.startswith('http'):
                 url = self.base_url + url
 
-            # Calculate confidence
-            confidence = self.calculate_match_confidence(search_term, title) if title else 0.5
-
-            return price, url, confidence, "Success"
+            return price, url, best_confidence, "Success"
 
         except TimeoutException:
             return None, None, 0.0, "Page load timeout"
