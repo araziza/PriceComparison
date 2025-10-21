@@ -289,24 +289,40 @@ class HomeDepotScraper(BaseScraper):
             driver = self._get_selenium_driver()
             driver.get(search_url)
 
-            # Wait for product listings to load
-            wait = WebDriverWait(driver, 10)
+            # Wait for page to fully load - give it more time
+            time.sleep(3)  # Give page time to load before checking
 
-            # Try to find product pods (Home Depot uses these for search results)
+            # Try to wait for common elements, but don't fail if not found
+            wait = WebDriverWait(driver, 15)  # Increased from 10 to 15 seconds
+
             try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.product-pod, div[data-testid='product-pod'], div.product-card")))
+                # Try multiple possible selectors that might appear
+                wait.until(EC.presence_of_element_located((
+                    By.CSS_SELECTOR,
+                    "div.product-pod, div[data-testid='product-pod'], div.product-card, div.plp-pod, div[class*='product'], article"
+                )))
             except TimeoutException:
-                return None, None, 0.0, "Search results did not load"
+                # Timeout is OK - we'll still try to parse what loaded
+                # Save HTML for debugging
+                self.save_debug_html(driver.page_source, part_number, "timeout_waiting_for_products")
+                pass
 
             # Parse the page with BeautifulSoup
             soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-            # Find first product - try multiple selectors
+            # Save full HTML for debugging if debug mode enabled
+            if self.debug_mode:
+                self.save_debug_html(driver.page_source, part_number, "full_page")
+
+            # Find first product - try MANY different selectors
             product = (
                 soup.find('div', class_='product-pod') or
                 soup.find('div', {'data-testid': 'product-pod'}) or
                 soup.find('div', class_='product-card') or
-                soup.find('div', class_='plp-pod')
+                soup.find('div', class_='plp-pod') or
+                soup.find('article', class_=re.compile(r'product', re.I)) or
+                soup.find('div', class_=re.compile(r'product-item', re.I)) or
+                soup.find('div', class_=re.compile(r'product-tile', re.I))
             )
 
             if not product:
