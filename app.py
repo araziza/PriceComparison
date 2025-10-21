@@ -8,6 +8,7 @@ import pandas as pd
 import os
 from datetime import datetime
 from io import BytesIO
+from typing import Optional
 from data_handler import DataHandler
 from scrapers import ScraperManager
 from config import (
