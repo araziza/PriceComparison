@@ -74,9 +74,11 @@ for test_case in test_cases:
             print(" Done!")
             print()
             print(f"  Results:")
-            print(f"    Price:      {f'${result[\"price\"]:.2f}' if result['price'] else 'NOT FOUND'}")
+            price_str = f"${result['price']:.2f}" if result['price'] else 'NOT FOUND'
+            print(f"    Price:      {price_str}")
             print(f"    URL:        {result.get('url', 'N/A')}")
-            print(f"    Confidence: {f'{result.get(\"confidence\", 0):.1%}'}")
+            confidence_str = f"{result.get('confidence', 0):.1%}"
+            print(f"    Confidence: {confidence_str}")
             print(f"    Status:     {result.get('status', 'unknown')}")
 
             # Validate results
