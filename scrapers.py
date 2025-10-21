@@ -207,47 +207,76 @@ class CanadianTireScraper(BaseScraper):
             driver = self._get_selenium_driver()
             driver.get(search_url)
 
-            # Wait for products to load
-            wait = WebDriverWait(driver, 10)
+            # Give page extra time to load
+            time.sleep(5)  # Canadian Tire needs more time
+
+            # Try to wait for products with longer timeout
+            wait = WebDriverWait(driver, 20)  # Increased from 10 to 20
             try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.product-tile, div[data-track-product], div.product-card")))
+                # Try multiple possible selectors
+                wait.until(EC.presence_of_element_located((
+                    By.CSS_SELECTOR,
+                    "div.product-tile, div[data-track-product], div.product-card, article[class*='product'], div[class*='product-item']"
+                )))
             except TimeoutException:
-                return None, None, 0.0, "Search results did not load"
+                # Don't fail immediately - still try to parse what loaded
+                self.save_debug_html(driver.page_source, part_number, "timeout_waiting_for_products")
+                pass
 
             soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-            # Canadian Tire product tiles
+            if self.debug_mode:
+                self.save_debug_html(driver.page_source, part_number, "full_page")
+
+            # Try MANY different selectors for Canadian Tire products
             product = (
                 soup.find('div', class_='product-tile') or
                 soup.find('div', {'data-track-product': True}) or
-                soup.find('div', class_='product-card')
+                soup.find('div', class_='product-card') or
+                soup.find('article', class_=re.compile(r'product', re.I)) or
+                soup.find('div', class_=re.compile(r'product-item', re.I)) or
+                soup.find('div', class_=re.compile(r'nl-product', re.I)) or
+                soup.find('div', {'data-product-id': True})
             )
 
             if not product:
+                self.save_debug_html(driver.page_source, part_number, "no_products_found")
                 return None, None, 0.0, "No products found"
 
-            # Extract title
+            # Extract title - try multiple selectors
             title_elem = (
                 product.find('div', class_='product-name') or
                 product.find('span', class_='product__name') or
-                product.find('h3', class_='product-name')
+                product.find('h3', class_='product-name') or
+                product.find('h2') or
+                product.find('a', class_=re.compile(r'product.*title', re.I)) or
+                product.find('span', class_=re.compile(r'product.*name', re.I))
             )
             title = title_elem.text.strip() if title_elem else ""
 
-            # Extract price
+            # Extract price - Canadian Tire specific
             price_elem = (
                 product.find('span', class_='price__value') or
                 product.find('span', class_='price') or
-                product.find('div', class_='price')
+                product.find('div', class_='price') or
+                product.find('span', class_=re.compile(r'price', re.I)) or
+                product.find('div', class_=re.compile(r'price', re.I))
             )
+
             if not price_elem:
+                # Try to find any price in the product
                 price_text = product.find(string=re.compile(r'\$\s*\d+'))
                 if price_text:
                     price = self.extract_price(price_text)
                 else:
+                    self.save_debug_html(driver.page_source, part_number, "price_not_found")
                     return None, None, 0.0, "Price not found"
             else:
                 price = self.extract_price(price_elem.text)
+
+            if not price:
+                self.save_debug_html(driver.page_source, part_number, "price_parse_failed")
+                return None, None, 0.0, "Could not parse price"
 
             # Extract URL
             link_elem = product.find('a', class_='product-link') or product.find('a', href=True)
