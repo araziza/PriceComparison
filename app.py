@@ -562,9 +562,11 @@ def main():
 
             if cached and cached.get('price'):
                 comp_price = cached['price']
+                comp_url = cached.get('url', '')
                 diff, pct = calculate_price_difference(nitro_price, comp_price)
 
                 row_data[f"{competitor} Price"] = f"${comp_price:.2f}"
+                row_data[f"{competitor} Link"] = comp_url if comp_url else None
                 row_data[f"{competitor} Diff"] = f"{pct:+.1f}%" if pct else "N/A"
                 row_data[f"{competitor} Status"] = "✓"
 
@@ -572,6 +574,7 @@ def main():
                 row_data[f"_{competitor}_pct"] = pct
             else:
                 row_data[f"{competitor} Price"] = "N/A"
+                row_data[f"{competitor} Link"] = None
                 row_data[f"{competitor} Diff"] = "N/A"
                 row_data[f"{competitor} Status"] = "✗"
                 row_data[f"_{competitor}_pct"] = None
@@ -669,16 +672,30 @@ def main():
         # Display comparison table
         st.markdown(f"### Price Comparison Table ({len(display_df)} parts)")
 
+        # Build column configuration dynamically
+        column_config = {
+            "Part Number": st.column_config.TextColumn("Part Number", pinned=True),
+            "Description": st.column_config.TextColumn("Description", pinned=True),
+            "Nitro Price": st.column_config.TextColumn("Nitro Price", pinned=True),
+        }
+
+        # Add link columns for each competitor
+        for col in display_df.columns:
+            if col.endswith(" Link"):
+                # Get competitor name (e.g., "Home Depot" from "Home Depot Link")
+                competitor_name = col.replace(" Link", "")
+                column_config[col] = st.column_config.LinkColumn(
+                    "🔗",
+                    help=f"Click to view product on {competitor_name}",
+                    width="small"
+                )
+
         # Use Streamlit's dataframe with highlighting and freeze first 3 columns
         st.dataframe(
             display_df,
             use_container_width=True,
             height=600,
-            column_config={
-                "Part Number": st.column_config.TextColumn("Part Number", pinned=True),
-                "Description": st.column_config.TextColumn("Description", pinned=True),
-                "Nitro Price": st.column_config.TextColumn("Nitro Price", pinned=True),
-            }
+            column_config=column_config
         )
 
         # Export to Excel
