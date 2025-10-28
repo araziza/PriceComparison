@@ -203,7 +203,8 @@ class CanadianTireScraper(BaseScraper):
         """Search Canadian Tire for a product using Selenium"""
         driver = None
         try:
-            search_term = f"{part_number} {part_description}".strip()
+            # Search with just the part number for better accuracy
+            search_term = part_number.strip()
             search_url = f"{self.base_url}/en/search-results.html?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
@@ -342,8 +343,8 @@ class HomeDepotScraper(BaseScraper):
         """Search Home Depot Canada for a product using Selenium"""
         driver = None
         try:
-            # Home Depot loads content via JavaScript, so we need Selenium
-            search_term = f"{part_number} {part_description}".strip()
+            # Search with just the part number for better accuracy
+            search_term = part_number.strip()
             search_url = f"{self.base_url}/search?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
