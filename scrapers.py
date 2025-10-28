@@ -716,7 +716,7 @@ class ScraperManager:
             # "Princess Auto": PrincessAutoScraper(),  # Disabled - unreliable scraping
             "Canadian Tire": CanadianTireScraper(),
             "Home Depot": HomeDepotScraper(),
-            "Lowes": LowesScraper(),
+            # "Lowes": LowesScraper(),  # Disabled - bot protection (Access Denied)
             # "Rona": RonaScraper()  # Disabled - unreliable scraping (Cloudflare issues)
         }
 
