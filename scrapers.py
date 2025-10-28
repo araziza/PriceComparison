@@ -203,8 +203,8 @@ class CanadianTireScraper(BaseScraper):
         """Search Canadian Tire for a product using Selenium"""
         driver = None
         try:
-            # Canadian Tire works better with part number + description
-            search_term = f"{part_number} {part_description}".strip()
+            # Search with just the part number for better accuracy
+            search_term = part_number.strip()
             search_url = f"{self.base_url}/en/search-results.html?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
