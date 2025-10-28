@@ -232,22 +232,52 @@ class CanadianTireScraper(BaseScraper):
             if self.debug_mode:
                 self.save_debug_html(driver.page_source, part_number, "full_page")
 
-            # Try MANY different selectors for Canadian Tire products
-            product = (
-                soup.find('div', class_='product-tile') or
-                soup.find('div', {'data-track-product': True}) or
-                soup.find('div', class_='product-card') or
-                soup.find('article', class_=re.compile(r'product', re.I)) or
-                soup.find('div', class_=re.compile(r'product-item', re.I)) or
-                soup.find('div', class_=re.compile(r'nl-product', re.I)) or
-                soup.find('div', {'data-product-id': True})
+            # Find ALL products - not just the first one
+            products = (
+                soup.find_all('div', class_='product-tile') or
+                soup.find_all('div', {'data-track-product': True}) or
+                soup.find_all('div', class_='product-card') or
+                soup.find_all('article', class_=re.compile(r'product', re.I)) or
+                soup.find_all('div', class_=re.compile(r'product-item', re.I)) or
+                soup.find_all('div', class_=re.compile(r'nl-product', re.I)) or
+                soup.find_all('div', {'data-product-id': True})
             )
 
-            if not product:
+            if not products:
                 self.save_debug_html(driver.page_source, part_number, "no_products_found")
                 return None, None, 0.0, "No products found"
 
-            # Extract title - try multiple selectors
+            # Search through ALL products to find the one matching our part number
+            best_match = None
+            best_confidence = 0.0
+
+            for product in products[:10]:  # Check first 10 products
+                # Extract title - try multiple selectors
+                title_elem = (
+                    product.find('div', class_='product-name') or
+                    product.find('span', class_='product__name') or
+                    product.find('h3', class_='product-name') or
+                    product.find('h2') or
+                    product.find('a', class_=re.compile(r'product.*title', re.I)) or
+                    product.find('span', class_=re.compile(r'product.*name', re.I))
+                )
+                title = title_elem.text.strip() if title_elem else ""
+
+                # Check if this product contains our exact part number
+                if part_number.upper() in title.upper() or part_number.upper() in str(product).upper():
+                    confidence = self.calculate_match_confidence(search_term, title)
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_match = product
+
+            # If no exact match found, fall back to first product with low confidence
+            if not best_match:
+                best_match = products[0]
+                best_confidence = 0.3
+
+            product = best_match
+
+            # Extract title from best match
             title_elem = (
                 product.find('div', class_='product-name') or
                 product.find('span', class_='product__name') or
