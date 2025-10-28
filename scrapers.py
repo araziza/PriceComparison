@@ -94,6 +94,10 @@ class BaseScraper(ABC):
         Returns:
             Price as float or None if not found
         """
+        # Check if text is None
+        if text is None:
+            return None
+
         # Remove extra whitespace and normalize
         text = ' '.join(text.split())
 
