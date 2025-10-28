@@ -669,11 +669,16 @@ def main():
         # Display comparison table
         st.markdown(f"### Price Comparison Table ({len(display_df)} parts)")
 
-        # Use Streamlit's dataframe with highlighting
+        # Use Streamlit's dataframe with highlighting and freeze first 3 columns
         st.dataframe(
             display_df,
             use_container_width=True,
-            height=600
+            height=600,
+            column_config={
+                "Part Number": st.column_config.TextColumn("Part Number", pinned=True),
+                "Description": st.column_config.TextColumn("Description", pinned=True),
+                "Nitro Price": st.column_config.TextColumn("Nitro Price", pinned=True),
+            }
         )
 
         # Export to Excel

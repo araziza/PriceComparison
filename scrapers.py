@@ -454,64 +454,111 @@ class HomeDepotScraper(BaseScraper):
 
 
 class LowesScraper(BaseScraper):
-    """Scraper for Lowes Canada (lowes.ca) - Uses Selenium for JavaScript content"""
+    """Scraper for Lowes US (lowes.com) - Uses Selenium for JavaScript content"""
 
-    def __init__(self):
-        super().__init__("Lowes", "https://www.lowes.ca")
+    def __init__(self, debug_mode: bool = False):
+        super().__init__("Lowes", "https://www.lowes.com", debug_mode=debug_mode)
 
     def search_product(self, part_number: str, part_description: str) -> Tuple[Optional[float], Optional[str], float, str]:
-        """Search Lowes Canada for a product using Selenium"""
+        """Search Lowes US for a product using Selenium with exact part number matching"""
         driver = None
         try:
             search_term = f"{part_number} {part_description}".strip()
-            search_url = f"{self.base_url}/search?q={requests.utils.quote(search_term)}"
+            search_url = f"{self.base_url}/search?searchTerm={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
 
             driver = self._get_selenium_driver()
             driver.get(search_url)
 
-            # Wait for products to load
-            wait = WebDriverWait(driver, 10)
+            # Give page time to load
+            time.sleep(3)
+
+            # Wait for products to load with longer timeout
+            wait = WebDriverWait(driver, 15)
             try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.product-tile, article.product-card, div.product-pod")))
+                wait.until(EC.presence_of_element_located((
+                    By.CSS_SELECTOR,
+                    "div.product-card, div[data-selector='productCard'], div.sc-product, article.product"
+                )))
             except TimeoutException:
-                return None, None, 0.0, "Search results did not load"
+                self.save_debug_html(driver.page_source, part_number, "timeout_waiting_for_products")
+                pass  # Continue anyway, might still parse something
 
             soup = BeautifulSoup(driver.page_source, 'html.parser')
+            self.save_debug_html(driver.page_source, part_number, "full_page")
 
-            # Lowes product tiles
-            product = (
-                soup.find('div', class_='product-tile') or
-                soup.find('article', class_='product-card') or
-                soup.find('div', class_='product-pod')
+            # Find ALL products - not just the first one
+            products = (
+                soup.find_all('div', class_='product-card') or
+                soup.find_all('div', {'data-selector': 'productCard'}) or
+                soup.find_all('div', class_='sc-product') or
+                soup.find_all('article', class_='product') or
+                soup.find_all('div', class_=re.compile(r'.*product.*card.*', re.I))
             )
 
-            if not product:
-                return None, None, 0.0, "No products found"
+            if not products:
+                self.save_debug_html(driver.page_source, part_number, "no_products_found")
+                return None, None, 0.0, "No products found in search results"
 
-            # Extract title
+            # Search through ALL products to find the one matching our part number
+            best_match = None
+            best_confidence = 0.0
+
+            for product in products[:10]:  # Check first 10 products
+                # Extract title
+                title_elem = (
+                    product.find('h2', class_='product-title') or
+                    product.find('div', class_='product-name') or
+                    product.find('a', class_='product-title') or
+                    product.find('span', {'data-selector': 'productTitle'}) or
+                    product.find('h3') or
+                    product.find('a', class_=re.compile(r'.*title.*', re.I))
+                )
+                title = title_elem.text.strip() if title_elem else ""
+
+                # Check if this product contains our exact part number
+                if part_number.upper() in title.upper() or part_number.upper() in str(product).upper():
+                    confidence = self.calculate_match_confidence(search_term, title)
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_match = product
+
+            # If no exact match found, fall back to first product with low confidence
+            if not best_match:
+                best_match = products[0]
+                best_confidence = 0.3
+
+            product = best_match
+
+            # Extract title from best match
             title_elem = (
                 product.find('h2', class_='product-title') or
                 product.find('div', class_='product-name') or
-                product.find('a', class_='product-title')
+                product.find('a', class_='product-title') or
+                product.find('span', {'data-selector': 'productTitle'}) or
+                product.find('h3') or
+                product.find('a', class_=re.compile(r'.*title.*', re.I))
             )
             title = title_elem.text.strip() if title_elem else ""
 
             # Extract price
             price_elem = (
                 product.find('span', class_='price-value') or
+                product.find('span', {'data-selector': 'priceValue'}) or
                 product.find('div', class_='price') or
-                product.find('span', class_='price')
+                product.find('span', class_='price') or
+                product.find('span', {'aria-label': re.compile(r'.*price.*', re.I)})
             )
+
             if not price_elem:
                 price_text = product.find(string=re.compile(r'\$\s*\d+'))
                 if price_text:
-                    price = self.extract_price(price_text)
+                    price = self.parse_price(price_text)
                 else:
                     return None, None, 0.0, "Price not found"
             else:
-                price = self.extract_price(price_elem.text)
+                price = self.parse_price(price_elem.text)
 
             # Extract URL
             link_elem = product.find('a', href=True)
@@ -519,10 +566,7 @@ class LowesScraper(BaseScraper):
             if url and not url.startswith('http'):
                 url = self.base_url + url
 
-            # Calculate confidence
-            confidence = self.calculate_match_confidence(search_term, title) if title else 0.5
-
-            return price, url, confidence, "Success"
+            return price, url, best_confidence, "Success"
 
         except TimeoutException:
             return None, None, 0.0, "Page load timeout"
@@ -669,11 +713,11 @@ class ScraperManager:
 
     def __init__(self):
         self.scrapers = {
-            "Princess Auto": PrincessAutoScraper(),
+            # "Princess Auto": PrincessAutoScraper(),  # Disabled - unreliable scraping
             "Canadian Tire": CanadianTireScraper(),
             "Home Depot": HomeDepotScraper(),
             "Lowes": LowesScraper(),
-            "Rona": RonaScraper()
+            # "Rona": RonaScraper()  # Disabled - unreliable scraping (Cloudflare issues)
         }
 
     def scrape_competitor(self, competitor: str, part_number: str, part_description: str) -> Dict:
