@@ -29,8 +29,6 @@ def main():
         app_path,
         "--server.headless=true",
         "--browser.gatherUsageStats=false",
-        "--server.port=8501",
-        "--server.address=localhost",
     ]
 
     # Start Streamlit
