@@ -120,10 +120,8 @@ def build_executable():
         # Collect all Streamlit files
         "--collect-all=streamlit",
         "--collect-all=altair",
-        "--collect-all=plotly",
         "--copy-metadata=streamlit",
         "--copy-metadata=altair",
-        "--copy-metadata=plotly",
         "--icon=NONE",
         "--noconfirm",
         "launcher.py"  # Use launcher as entry point instead of app.py
