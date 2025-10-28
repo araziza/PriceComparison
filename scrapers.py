@@ -203,8 +203,9 @@ class CanadianTireScraper(BaseScraper):
         """Search Canadian Tire for a product using Selenium"""
         driver = None
         try:
-            # Search with just the part number for better accuracy
-            search_term = part_number.strip()
+            # Canadian Tire needs brand context - extract first word (usually brand name)
+            brand = part_description.split()[0] if part_description else ""
+            search_term = f"{part_number} {brand}".strip()
             search_url = f"{self.base_url}/en/search-results.html?q={requests.utils.quote(search_term)}"
 
             time.sleep(SCRAPE_DELAY)
