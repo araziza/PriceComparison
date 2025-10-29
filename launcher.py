@@ -27,7 +27,7 @@ def main():
         "streamlit",
         "run",
         app_path,
-        "--server.headless=true",
+        "--server.headless=false",  # Changed to false to auto-open browser
         "--browser.gatherUsageStats=false",
     ]
 
