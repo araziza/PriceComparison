@@ -70,6 +70,7 @@ def build_executable():
         "--add-data=config.py:.",
         "--add-data=data_handler.py:.",
         "--add-data=scrapers.py:.",
+        "--add-data=.streamlit:.streamlit",
         # Core imports
         "--hidden-import=streamlit",
         "--hidden-import=streamlit.web.cli",
