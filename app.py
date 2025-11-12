@@ -6,8 +6,10 @@ Main Streamlit application
 import streamlit as st
 import pandas as pd
 import os
+import time
 from datetime import datetime
 from io import BytesIO
+from typing import Optional
 from data_handler import DataHandler
 from scrapers import ScraperManager
 from config import (
@@ -382,6 +384,32 @@ def main():
              "Max Price Difference", "Min Competitor Price"]
         )
 
+        st.markdown("---")
+        st.header("Processing Options")
+
+        # Sample size limiter
+        enable_limit = st.checkbox("Limit items to process", value=False,
+                                   help="Process only a subset of items (recommended for large datasets)")
+
+        if enable_limit:
+            max_items = st.number_input(
+                "Max items to process",
+                min_value=10,
+                max_value=10000,
+                value=100,
+                step=10,
+                help="Process only the first N items (after filters)"
+            )
+        else:
+            max_items = None
+
+        # Cache usage option
+        use_cache_only = st.checkbox(
+            "Show cached data only (no new scraping)",
+            value=True,
+            help="Display cached prices without scraping. Uncheck to force update."
+        )
+
         # Competitor selection
         st.markdown("---")
         st.header("Competitors")
@@ -417,7 +445,8 @@ def main():
     col1, col2, col3 = st.columns([2, 2, 6])
 
     with col1:
-        scrape_button = st.button("🔄 Force Update Prices", use_container_width=True)
+        scrape_button = st.button("🔄 Force Update Prices", use_container_width=True,
+                                 help="Scrape fresh prices for displayed items")
 
     with col2:
         export_button = st.button("📊 Export to Excel", use_container_width=True)
@@ -433,10 +462,58 @@ def main():
         )
         parts_df = parts_df[mask]
 
+    # Apply item limit
+    original_count = len(parts_df)
+    if max_items and len(parts_df) > max_items:
+        parts_df = parts_df.head(max_items)
+        st.warning(f"⚠️ Processing limited to {max_items} of {original_count} items. "
+                  f"Adjust limit in sidebar or disable to process all.")
+
+    # Calculate cache statistics
+    items_with_cache = 0
+    items_without_cache = 0
+    for _, row in parts_df.iterrows():
+        part_num = row['part_number']
+        has_any_cache = False
+        for competitor in selected_competitors:
+            cached = st.session_state.data_handler.get_cached_price(part_num, competitor)
+            if cached and cached.get('price'):
+                has_any_cache = True
+                break
+        if has_any_cache:
+            items_with_cache += 1
+        else:
+            items_without_cache += 1
+
+    # Show cache statistics
+    col_stat1, col_stat2, col_stat3 = st.columns(3)
+    with col_stat1:
+        st.metric("Total Items", len(parts_df))
+    with col_stat2:
+        st.metric("Items with Cached Prices", items_with_cache)
+    with col_stat3:
+        st.metric("Items Need Scraping", items_without_cache)
+
+    # Show what will be processed
+    if scrape_button and not use_cache_only:
+        st.info(f"🔄 Scraping prices for {len(parts_df)} items across {len(selected_competitors)} competitors. "
+               f"This may take several minutes...")
+    elif use_cache_only and items_without_cache > 0:
+        st.info(f"ℹ️ Showing cached data only. {items_without_cache} items don't have cached prices. "
+               f"Uncheck 'Show cached data only' and click 'Force Update Prices' to scrape them.")
+
     # Build comparison dataframe
     comparison_data = []
 
-    for idx, row in parts_df.iterrows():
+    # Progress tracking for scraping
+    if scrape_button and not use_cache_only:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        eta_text = st.empty()
+        total_items = len(parts_df)
+        start_time = time.time()
+
+    for item_idx, (idx, row) in enumerate(parts_df.iterrows()):
         part_num = row['part_number']
         part_desc = row['part_description']
         nitro_price = row['nitro_price']
@@ -447,29 +524,49 @@ def main():
             'Nitro Price': f"${nitro_price:.2f}" if pd.notna(nitro_price) else "N/A"
         }
 
+        # Update progress
+        if scrape_button and not use_cache_only:
+            progress = (item_idx + 1) / total_items
+            progress_bar.progress(progress)
+            status_text.text(f"Processing item {item_idx + 1} of {total_items}: {part_num}")
+
+            # Calculate ETA
+            if item_idx > 0:
+                elapsed = time.time() - start_time
+                avg_time_per_item = elapsed / (item_idx + 1)
+                remaining_items = total_items - (item_idx + 1)
+                eta_seconds = avg_time_per_item * remaining_items
+                eta_minutes = int(eta_seconds / 60)
+                eta_secs = int(eta_seconds % 60)
+                eta_text.text(f"⏱️ Estimated time remaining: {eta_minutes}m {eta_secs}s")
+
         # Get competitor prices
         for competitor in selected_competitors:
             cached = st.session_state.data_handler.get_cached_price(part_num, competitor)
 
-            if scrape_button or cached is None:
-                # Scrape fresh data
-                with st.spinner(f"Scraping {competitor} for {part_num}..."):
-                    result = st.session_state.scraper_manager.scrape_competitor(
-                        competitor, part_num, part_desc
-                    )
+            # Only scrape if Force Update is clicked AND cache-only mode is off
+            should_scrape = scrape_button and not use_cache_only and (cached is None or True)
 
-                    st.session_state.data_handler.cache_price(
-                        part_num, competitor, result['price'],
-                        result.get('url'), result.get('confidence', 0.0),
-                        result['status'], result.get('error_message', '')
-                    )
-                    cached = st.session_state.data_handler.get_cached_price(part_num, competitor)
+            if should_scrape:
+                # Scrape fresh data
+                result = st.session_state.scraper_manager.scrape_competitor(
+                    competitor, part_num, part_desc
+                )
+
+                st.session_state.data_handler.cache_price(
+                    part_num, competitor, result['price'],
+                    result.get('url'), result.get('confidence', 0.0),
+                    result['status'], result.get('error_message', '')
+                )
+                cached = st.session_state.data_handler.get_cached_price(part_num, competitor)
 
             if cached and cached.get('price'):
                 comp_price = cached['price']
+                comp_url = cached.get('url', '')
                 diff, pct = calculate_price_difference(nitro_price, comp_price)
 
                 row_data[f"{competitor} Price"] = f"${comp_price:.2f}"
+                row_data[f"{competitor} Link"] = comp_url if comp_url else None
                 row_data[f"{competitor} Diff"] = f"{pct:+.1f}%" if pct else "N/A"
                 row_data[f"{competitor} Status"] = "✓"
 
@@ -477,11 +574,20 @@ def main():
                 row_data[f"_{competitor}_pct"] = pct
             else:
                 row_data[f"{competitor} Price"] = "N/A"
+                row_data[f"{competitor} Link"] = None
                 row_data[f"{competitor} Diff"] = "N/A"
                 row_data[f"{competitor} Status"] = "✗"
                 row_data[f"_{competitor}_pct"] = None
 
         comparison_data.append(row_data)
+
+    # Clear progress indicators
+    if scrape_button and not use_cache_only:
+        progress_bar.empty()
+        status_text.empty()
+        eta_text.empty()
+        total_time = time.time() - start_time
+        st.success(f"✅ Completed processing {len(parts_df)} items in {int(total_time/60)}m {int(total_time%60)}s!")
 
     # Save comparison data
     st.session_state.data_handler.save_cache()
@@ -566,11 +672,30 @@ def main():
         # Display comparison table
         st.markdown(f"### Price Comparison Table ({len(display_df)} parts)")
 
-        # Use Streamlit's dataframe with highlighting
+        # Build column configuration dynamically
+        column_config = {
+            "Part Number": st.column_config.TextColumn("Part Number", pinned=True),
+            "Description": st.column_config.TextColumn("Description", pinned=True),
+            "Nitro Price": st.column_config.TextColumn("Nitro Price", pinned=True),
+        }
+
+        # Add link columns for each competitor
+        for col in display_df.columns:
+            if col.endswith(" Link"):
+                # Get competitor name (e.g., "Home Depot" from "Home Depot Link")
+                competitor_name = col.replace(" Link", "")
+                column_config[col] = st.column_config.LinkColumn(
+                    "🔗",
+                    help=f"Click to view product on {competitor_name}",
+                    width="small"
+                )
+
+        # Use Streamlit's dataframe with highlighting and freeze first 3 columns
         st.dataframe(
             display_df,
             use_container_width=True,
-            height=600
+            height=600,
+            column_config=column_config
         )
 
         # Export to Excel

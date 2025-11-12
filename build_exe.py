@@ -27,6 +27,21 @@ def build_executable():
 
     print()
 
+    # Verify required files exist
+    required_files = ['launcher.py', 'app.py', 'config.py', 'data_handler.py', 'scrapers.py']
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+
+    if missing_files:
+        print("✗ Missing required files:")
+        for f in missing_files:
+            print(f"  - {f}")
+        print()
+        print("Please ensure all required files are present before building.")
+        return False
+
+    print("✓ All required files found")
+    print()
+
     # Clean previous builds
     if os.path.exists("build"):
         print("Cleaning build directory...")
@@ -49,20 +64,68 @@ def build_executable():
     pyinstaller_args = [
         "pyinstaller",
         "--name=NitroPriceComparison",
-        "--onefile",
-        "--windowed",
+        "--onedir",  # Changed from --onefile for better Streamlit compatibility
+        # Removed --windowed to keep console visible for errors and Streamlit output
+        "--add-data=app.py:.",
         "--add-data=config.py:.",
         "--add-data=data_handler.py:.",
         "--add-data=scrapers.py:.",
+        "--add-data=.streamlit:.streamlit",
+        # Core imports
         "--hidden-import=streamlit",
+        "--hidden-import=streamlit.web.cli",
+        "--hidden-import=streamlit.runtime.scriptrunner.magic_funcs",
         "--hidden-import=pandas",
         "--hidden-import=openpyxl",
         "--hidden-import=selenium",
         "--hidden-import=bs4",
         "--hidden-import=fuzzywuzzy",
+        # Additional Streamlit dependencies
+        "--hidden-import=streamlit.runtime",
+        "--hidden-import=streamlit.runtime.scriptrunner",
+        "--hidden-import=streamlit.runtime.state",
+        "--hidden-import=streamlit.components.v1",
+        "--hidden-import=altair",
+        "--hidden-import=blinker",
+        "--hidden-import=cachetools",
+        "--hidden-import=click",
+        "--hidden-import=gitpython",
+        "--hidden-import=importlib_metadata",
+        "--hidden-import=packaging",
+        "--hidden-import=pillow",
+        "--hidden-import=protobuf",
+        "--hidden-import=pyarrow",
+        "--hidden-import=pympler",
+        "--hidden-import=python_dateutil",
+        "--hidden-import=requests",
+        "--hidden-import=rich",
+        "--hidden-import=tenacity",
+        "--hidden-import=toml",
+        "--hidden-import=tornado",
+        "--hidden-import=typing_extensions",
+        "--hidden-import=tzlocal",
+        "--hidden-import=validators",
+        "--hidden-import=watchdog",
+        # Selenium dependencies
+        "--hidden-import=selenium.webdriver.chrome.service",
+        "--hidden-import=selenium.webdriver.common.by",
+        "--hidden-import=webdriver_manager.chrome",
+        # BeautifulSoup dependencies
+        "--hidden-import=bs4.builder._htmlparser",
+        "--hidden-import=bs4.builder._lxml",
+        "--hidden-import=lxml",
+        "--hidden-import=lxml.etree",
+        "--hidden-import=lxml.html",
+        # Openpyxl dependencies
+        "--hidden-import=openpyxl.cell._writer",
+        # Collect all Streamlit files
         "--collect-all=streamlit",
+        "--collect-all=altair",
+        "--copy-metadata=streamlit",
+        "--copy-metadata=altair",
         "--icon=NONE",
-        "app.py"
+        "--noconfirm",
+        "launcher.py"  # Use launcher as entry point instead of app.py
     ]
 
     # On Windows, adjust the separator
@@ -76,11 +139,22 @@ def build_executable():
         print("✓ Build successful!")
         print("=" * 60)
         print()
-        print(f"Executable location: {os.path.join(os.getcwd(), 'dist', 'NitroPriceComparison')}")
+        dist_folder = os.path.join(os.getcwd(), 'dist', 'NitroPriceComparison')
+        print(f"Executable location: {dist_folder}")
         print()
-        print("To run the executable:")
-        print("  1. Navigate to the 'dist' folder")
-        print("  2. Run 'NitroPriceComparison' (or NitroPriceComparison.exe on Windows)")
+        print("To run the application:")
+        print("  1. Navigate to: dist/NitroPriceComparison/")
+        if sys.platform == "win32":
+            print("  2. Double-click 'NitroPriceComparison.exe'")
+            print("     OR run from command prompt: NitroPriceComparison.exe")
+        else:
+            print("  2. Run: ./NitroPriceComparison")
+        print()
+        print("IMPORTANT:")
+        print("  - The console window will stay open - this is normal")
+        print("  - The Streamlit app will automatically open in your browser")
+        print("  - Do NOT close the console window while using the app")
+        print("  - Press Ctrl+C in the console to stop the application")
         print()
 
     except subprocess.CalledProcessError as e:
